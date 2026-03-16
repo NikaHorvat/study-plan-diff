@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Study Plan Diff — EPFL</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0e0f13;
+      --surface:   #16181f;
+      --border:    #272a35;
+      --accent:    #e8c547;
+      --accent2:   #4eadf2;
+      --green:     #4fcb8a;
+      --red:       #f26b6b;
+      --text:      #e8eaf0;
+      --muted:     #6b7280;
+      --radius:    12px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-weight: 300;
+      overflow-x: hidden;
+    }
+
+    /* ── noise grain ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ── glow blobs ── */
+    .blob {
+      position: fixed; border-radius: 50%; filter: blur(110px); pointer-events: none; z-index: 0;
+    }
+    .blob-1 { width: 500px; height: 500px; background: rgba(232,197,71,0.07); top: -150px; left: -100px; }
+    .blob-2 { width: 400px; height: 400px; background: rgba(78,173,242,0.06); bottom: -100px; right: -50px; }
+
+    /* ── layout ── */
+    main {
+      position: relative; z-index: 1;
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 60px 20px 80px;
+    }
+
+    /* ── header ── */
+    header {
+      text-align: center; margin-bottom: 56px;
+    }
+    header .eyebrow {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px; letter-spacing: 0.2em;
+      color: var(--accent); text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+    header h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(2rem, 5vw, 3.4rem);
+      line-height: 1.1;
+      color: var(--text);
+    }
+    header h1 em {
+      font-style: italic; color: var(--accent);
+    }
+    header p {
+      margin-top: 16px; max-width: 480px;
+      color: var(--muted); font-size: 15px; line-height: 1.7;
+    }
+
+    /* ── card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 36px 40px;
+      width: 100%; max-width: 780px;
+    }
+
+    /* ── drop zones row ── */
+    .dropzone-row {
+      display: grid; grid-template-columns: 1fr 40px 1fr; gap: 0;
+      align-items: center; margin-bottom: 32px;
+    }
+    .arrow-divider {
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 20px; padding-top: 24px;
+    }
+
+    .drop-wrap { display: flex; flex-direction: column; gap: 8px; }
+    .drop-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+      color: var(--muted);
+    }
+    .drop-label span {
+      display: inline-block; width: 18px; height: 18px; border-radius: 50%;
+      font-size: 10px; line-height: 18px; text-align: center;
+      font-family: 'DM Sans', sans-serif; font-weight: 600;
+      margin-right: 6px; letter-spacing: 0;
+    }
+    .drop-label .badge-old  { background: rgba(242,107,107,0.2); color: var(--red); }
+    .drop-label .badge-new  { background: rgba(79,203,138,0.2);  color: var(--green); }
+
+    .dropzone {
+      border: 1.5px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 28px 20px;
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+      cursor: pointer; transition: border-color 0.2s, background 0.2s;
+      background: transparent; position: relative; overflow: hidden;
+      min-height: 140px; justify-content: center;
+    }
+    .dropzone:hover, .dropzone.drag-over {
+      border-color: var(--accent);
+      background: rgba(232,197,71,0.04);
+    }
+    .dropzone.filled {
+      border-color: var(--accent2);
+      background: rgba(78,173,242,0.05);
+    }
+    .dropzone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+    }
+    .dz-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(255,255,255,0.04);
+      font-size: 20px;
+    }
+    .dz-text { font-size: 13px; color: var(--muted); text-align: center; line-height: 1.5; }
+    .dz-text strong { display: block; color: var(--text); font-weight: 500; font-size: 14px; margin-bottom: 3px; }
+    .dz-filename {
+      font-family: 'DM Mono', monospace; font-size: 12px;
+      color: var(--accent2); word-break: break-all; text-align: center;
+      padding: 6px 12px; background: rgba(78,173,242,0.08);
+      border-radius: 6px; max-width: 100%;
+    }
+    .dz-clear {
+      position: absolute; top: 8px; right: 8px;
+      background: rgba(255,255,255,0.06); border: none; color: var(--muted);
+      width: 24px; height: 24px; border-radius: 50%; cursor: pointer;
+      font-size: 14px; display: none; align-items: center; justify-content: center;
+      z-index: 2; transition: background 0.15s;
+    }
+    .dz-clear:hover { background: rgba(242,107,107,0.2); color: var(--red); }
+    .dropzone.filled .dz-clear { display: flex; }
+
+    /* ── output name ── */
+    .output-row {
+      margin-bottom: 28px;
+    }
+    .output-row label {
+      display: block;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .output-row input[type="text"] {
+      width: 100%;
+      background: rgba(255,255,255,0.03);
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-family: 'DM Mono', monospace; font-size: 13px;
+      color: var(--text); outline: none;
+      transition: border-color 0.2s;
+    }
+    .output-row input[type="text"]:focus { border-color: var(--accent); }
+
+    /* ── run button ── */
+    .btn-run {
+      width: 100%;
+      padding: 15px 24px;
+      border-radius: 10px;
+      border: none; cursor: pointer;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 15px; font-weight: 600; letter-spacing: 0.02em;
+      background: var(--accent);
+      color: #0e0f13;
+      transition: opacity 0.2s, transform 0.15s;
+      position: relative; overflow: hidden;
+    }
+    .btn-run:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+    .btn-run:active:not(:disabled) { transform: translateY(0); }
+    .btn-run:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* ── status ── */
+    .status-bar {
+      margin-top: 20px;
+      border-radius: 10px;
+      padding: 14px 18px;
+      font-size: 14px; line-height: 1.5;
+      display: none;
+    }
+    .status-bar.loading {
+      display: flex; align-items: center; gap: 12px;
+      background: rgba(78,173,242,0.08); border: 1px solid rgba(78,173,242,0.2);
+      color: var(--accent2);
+    }
+    .status-bar.success {
+      display: flex; align-items: center; gap: 12px;
+      background: rgba(79,203,138,0.08); border: 1px solid rgba(79,203,138,0.2);
+      color: var(--green);
+    }
+    .status-bar.error {
+      display: flex; align-items: center; gap: 12px;
+      background: rgba(242,107,107,0.08); border: 1px solid rgba(242,107,107,0.2);
+      color: var(--red);
+    }
+    .status-bar .status-icon { font-size: 18px; flex-shrink: 0; }
+    .status-bar .status-msg { flex: 1; }
+    .status-bar a.dl-link {
+      font-weight: 600; color: var(--green); text-decoration: underline; cursor: pointer;
+    }
+
+    /* ── spinner ── */
+    .spinner {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 2px solid rgba(78,173,242,0.3);
+      border-top-color: var(--accent2);
+      animation: spin 0.7s linear infinite; flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── history ── */
+    .history-section {
+      width: 100%; max-width: 780px; margin-top: 32px;
+    }
+    .history-section h2 {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 14px;
+    }
+    .history-list { display: flex; flex-direction: column; gap: 8px; }
+    .history-item {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 16px;
+      display: flex; align-items: center; gap: 12px;
+      font-size: 13px;
+    }
+    .history-item .hi-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); flex-shrink: 0;
+    }
+    .history-item .hi-names { flex: 1; color: var(--muted); }
+    .history-item .hi-names strong { color: var(--text); }
+    .history-item .hi-time {
+      font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted);
+    }
+
+    /* ── legend ── */
+    .legend {
+      display: flex; gap: 20px; flex-wrap: wrap;
+      margin-top: 28px; padding-top: 24px;
+      border-top: 1px solid var(--border);
+    }
+    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+    .swatch-mod  { background: #FFF59D; }
+    .swatch-rm   { background: #FFCDD2; }
+    .swatch-add  { background: #C8E6C9; }
+  </style>
+</head>
+<body>
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+
+  <main>
+    <header>
+      <p class="eyebrow">EPFL · Study Plan Analyser</p>
+      <h1>Compare Study<br/><em>Plan Differences</em></h1>
+      <p>Upload two Excel study plans and get a highlighted diff workbook — with a colour-coded summary sheet — in seconds.</p>
+    </header>
+
+    <div class="card">
+      <!-- Drop zones -->
+      <div class="dropzone-row">
+        <!-- OLD -->
+        <div class="drop-wrap">
+          <div class="drop-label"><span class="badge-old">A</span>Current / Reference Plan</div>
+          <div class="dropzone" id="dz-old" ondragover="handleDragOver(event,'dz-old')" ondragleave="handleDragLeave('dz-old')" ondrop="handleDrop(event,'old')">
+            <input type="file" accept=".xlsx" id="file-old" onchange="handleFileSelect('old', this.files[0])"/>
+            <div class="dz-icon">📄</div>
+            <div class="dz-text">
+              <strong>Drop here or click</strong>
+              e.g. Plan_2022-2023.xlsx
+            </div>
+            <div class="dz-filename" id="fn-old" style="display:none"></div>
+            <button class="dz-clear" onclick="clearFile('old',event)">✕</button>
+          </div>
+        </div>
+
+        <!-- arrow -->
+        <div class="arrow-divider">→</div>
+
+        <!-- NEW -->
+        <div class="drop-wrap">
+          <div class="drop-label"><span class="badge-new">B</span>Next Year's Plan</div>
+          <div class="dropzone" id="dz-new" ondragover="handleDragOver(event,'dz-new')" ondragleave="handleDragLeave('dz-new')" ondrop="handleDrop(event,'new')">
+            <input type="file" accept=".xlsx" id="file-new" onchange="handleFileSelect('new', this.files[0])"/>
+            <div class="dz-icon">📄</div>
+            <div class="dz-text">
+              <strong>Drop here or click</strong>
+              e.g. Plan_2023-2024.xlsx
+            </div>
+            <div class="dz-filename" id="fn-new" style="display:none"></div>
+            <button class="dz-clear" onclick="clearFile('new',event)">✕</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Output name -->
+      <div class="output-row">
+        <label>Output Filename</label>
+        <input type="text" id="output-name" placeholder="diff_output.xlsx" value="diff_output.xlsx"/>
+      </div>
+
+      <!-- Run button -->
+      <button class="btn-run" id="btn-run" disabled onclick="runComparison()">
+        Generate Diff Workbook
+      </button>
+
+      <!-- Status -->
+      <div class="status-bar" id="status-bar">
+        <span class="status-icon" id="status-icon"></span>
+        <span class="status-msg" id="status-msg"></span>
+      </div>
+
+      <!-- Legend -->
+      <div class="legend">
+        <div class="legend-item"><div class="swatch swatch-mod"></div> Modified cell</div>
+        <div class="legend-item"><div class="swatch swatch-rm"></div> Removed course</div>
+        <div class="legend-item"><div class="swatch swatch-add"></div> Added course</div>
+        <div class="legend-item" style="color:var(--muted);font-size:12px;">+ "Diff Summary" sheet inside the output file</div>
+      </div>
+    </div>
+
+    <!-- Run history -->
+    <div class="history-section">
+      <h2>Run History</h2>
+      <div class="history-list" id="history-list">
+        <div style="color:var(--muted);font-size:13px;">No comparisons yet this session.</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const files = { old: null, new: null };
+    const history = [];
+
+    function handleDragOver(e, dzId) {
+      e.preventDefault();
+      document.getElementById(dzId).classList.add('drag-over');
+    }
+    function handleDragLeave(dzId) {
+      document.getElementById(dzId).classList.remove('drag-over');
+    }
+    function handleDrop(e, which) {
+      e.preventDefault();
+      const dzId = 'dz-' + which;
+      document.getElementById(dzId).classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) handleFileSelect(which, file);
+    }
+
+    function handleFileSelect(which, file) {
+      if (!file || !file.name.endsWith('.xlsx')) {
+        showStatus('error', '⚠️ Only .xlsx files are accepted.');
+        return;
+      }
+      files[which] = file;
+      const dz = document.getElementById('dz-' + which);
+      const fn = document.getElementById('fn-' + which);
+      dz.classList.add('filled');
+      fn.textContent = file.name;
+      fn.style.display = 'block';
+
+      // Auto-suggest output name from old file
+      if (which === 'old') {
+        const base = file.name.replace('.xlsx', '');
+        document.getElementById('output-name').value = base + '_with_diffs.xlsx';
+      }
+      updateButton();
+      clearStatus();
+    }
+
+    function clearFile(which, e) {
+      e.stopPropagation();
+      files[which] = null;
+      const dz = document.getElementById('dz-' + which);
+      const fn = document.getElementById('fn-' + which);
+      const input = document.getElementById('file-' + which);
+      dz.classList.remove('filled');
+      fn.style.display = 'none';
+      fn.textContent = '';
+      input.value = '';
+      updateButton();
+    }
+
+    function updateButton() {
+      document.getElementById('btn-run').disabled = !(files.old && files.new);
+    }
+
+    function showStatus(type, msg) {
+      const bar = document.getElementById('status-bar');
+      const icon = document.getElementById('status-icon');
+      const msgEl = document.getElementById('status-msg');
+      bar.className = 'status-bar ' + type;
+      if (type === 'loading') {
+        icon.innerHTML = '<div class="spinner"></div>';
+      } else if (type === 'success') {
+        icon.textContent = '✓';
+      } else {
+        icon.textContent = '✕';
+      }
+      msgEl.innerHTML = msg;
+    }
+
+    function clearStatus() {
+      document.getElementById('status-bar').className = 'status-bar';
+    }
+
+    async function runComparison() {
+      const btn = document.getElementById('btn-run');
+      btn.disabled = true;
+      showStatus('loading', 'Comparing study plans… this may take a few seconds.');
+
+      const formData = new FormData();
+      formData.append('old', files.old);
+      formData.append('new', files.new);
+
+      try {
+        const res = await fetch('/compare', { method: 'POST', body: formData });
+
+        if (!res.ok) {
+          const err = await res.json();
+          showStatus('error', '❌ ' + (err.error || 'Unexpected error.'));
+          btn.disabled = false;
+          return;
+        }
+
+        const blob = await res.blob();
+        const outName = document.getElementById('output-name').value || 'diff_output.xlsx';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = outName; a.click();
+        URL.revokeObjectURL(url);
+
+        showStatus('success',
+          `✓ Done! <strong>${outName}</strong> is downloading. 
+           <a class="dl-link" onclick="document.querySelector('a[download]')?.click()">Re-download</a>`
+        );
+
+        addHistory(files.old.name, files.new.name, outName);
+
+      } catch (err) {
+        showStatus('error', '❌ Could not reach the server. Make sure <code>app.py</code> is running on port 5050.');
+      }
+
+      btn.disabled = false;
+    }
+
+    function addHistory(oldName, newName, outName) {
+      const time = new Date().toLocaleTimeString();
+      history.unshift({ oldName, newName, outName, time });
+
+      const list = document.getElementById('history-list');
+      list.innerHTML = history.map(h => `
+        <div class="history-item">
+          <div class="hi-dot"></div>
+          <div class="hi-names"><strong>${h.oldName}</strong> → <strong>${h.newName}</strong><br/>Output: ${h.outName}</div>
+          <div class="hi-time">${h.time}</div>
+        </div>
+      `).join('');
+    }
+  </script>
+</body>
+</html>

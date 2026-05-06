@@ -443,8 +443,18 @@
         const res = await fetch('/compare', { method: 'POST', body: formData });
 
         if (!res.ok) {
-          const err = await res.json();
-          showStatus('error', '❌ ' + (err.error || 'Unexpected error.'));
+          let message = 'Unexpected error.';
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            const err = await res.json();
+            message = err.error || message;
+          } else {
+            const text = await res.text();
+            if (text && text.trim()) {
+              message = `Request failed (${res.status}).`;
+            }
+          }
+          showStatus('error', '❌ ' + message);
           btn.disabled = false;
           return;
         }
@@ -464,7 +474,7 @@
         addHistory(files.old.name, files.new.name, outName);
 
       } catch (err) {
-        showStatus('error', '❌ Could not reach the server. Make sure <code>app.py</code> is running on port 5050.');
+        showStatus('error', '❌ The compare request failed before the server returned a valid response. This is usually a timeout, upload-size issue, or a backend crash.');
       }
 
       btn.disabled = false;

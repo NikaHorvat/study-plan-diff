@@ -19,6 +19,16 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 80 * 1024 * 1024  # 80 MB
 
 
+@app.errorhandler(413)
+def payload_too_large(_exc):
+    return jsonify({"error": "Uploaded files are too large. The combined upload must stay below 80 MB."}), 413
+
+
+@app.errorhandler(500)
+def internal_server_error(_exc):
+    return jsonify({"error": "The server hit an internal error while processing the comparison."}), 500
+
+
 def is_allowed(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
@@ -64,6 +74,7 @@ def compare_endpoint():
         try:
             run(str(old_path), str(new_path), str(output_path))
         except Exception as exc:  # pragma: no cover
+            app.logger.exception("Comparison failed")
             return jsonify({"error": f"Comparison failed: {exc}"}), 500
 
         return send_file(
@@ -77,3 +88,4 @@ def compare_endpoint():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5050"))
     app.run(host="0.0.0.0", port=port, debug=True)
+

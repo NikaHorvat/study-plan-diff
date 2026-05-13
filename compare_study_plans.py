@@ -45,7 +45,18 @@ FIELD_PATTERNS: Dict[str, Sequence[str]] = {
     "semesters": ("semestre", "semestres"),
     "period": ("periode", "period"),
     "language": ("langue",),
-    "specializations": ("specialisation", "specialisations"),
+    "specializations": (
+        "specialisation",
+        "specialisations",
+        "specialization",
+        "specializations",
+        "orientation",
+        "orientations",
+        "mineur",
+        "mineurs",
+        "minor",
+        "minors",
+    ),
     "coeff": ("coeff", "coefficient"),
 }
 
@@ -54,6 +65,7 @@ FIELD_PATTERNS: Dict[str, Sequence[str]] = {
 # the provided max width.
 FIELD_SPAN_RULES: Dict[str, Dict[str, int]] = {
     "period": {"mode": "fixed", "width": 2},
+    "type": {"mode": "gap", "max": 12},
     "specializations": {"mode": "gap", "max": 12},
     "semesters": {"mode": "gap", "max": 8},
 }
@@ -94,6 +106,29 @@ class CourseRow:
     group_order: int
     compare_fields: Sequence[str]
     used: bool = field(default=False)
+
+
+@dataclass
+class GroupHeaderRow:
+    """A non-course bloc/group row that can still carry comparable values."""
+
+    sheet: str
+    row_idx: int
+    group_key: str
+    group_label: str
+    layout_ranges: Dict[str, Tuple[int, int]]
+    field_values: Dict[str, List[Optional[object]]]
+    compare_fields: Sequence[str]
+
+
+@dataclass
+class FooterRow:
+    """A non-empty informational row below the last table on a sheet."""
+
+    sheet: str
+    row_idx: int
+    values: List[Optional[object]]
+    text_key: str
 
 
 # --- Text utilities -----------------------------------------------------------------
@@ -182,6 +217,18 @@ def looks_like_group_header(text: str) -> bool:
     )
 
 
+def looks_like_boundary_header(text: str) -> bool:
+    """Rows that should split logical groups even if they are not bloc/group titles."""
+
+    normalized = normalize_text(text)
+    return bool(
+        re.match(
+            r"^(optional courses|cours optionnels|total credits|total des credits|total des crédits|notes?\b|remarques?\b)",
+            normalized,
+        )
+    )
+
+
 CODE_KEY_PATTERN = re.compile(r"[^0-9A-Za-z]+")
 
 
@@ -249,8 +296,21 @@ def detect_header(
     return None
 
 
+def merged_header_span(ws: Worksheet, header_row: int, start_col: int) -> Optional[Tuple[int, int]]:
+    """Return the merged-column span for a header cell if it is part of a horizontal merge."""
+
+    for merged in ws.merged_cells.ranges:
+        if (
+            merged.min_row <= header_row <= merged.max_row
+            and merged.min_col <= start_col <= merged.max_col
+            and merged.min_col != merged.max_col
+        ):
+            return merged.min_col, merged.max_col
+    return None
+
+
 def compute_field_ranges(
-    header_positions: Dict[str, int], max_column: int
+    ws: Worksheet, header_row: int, header_positions: Dict[str, int], max_column: int
 ) -> Dict[str, Tuple[int, int]]:
     """Expand header positions into column ranges."""
 
@@ -260,13 +320,17 @@ def compute_field_ranges(
         next_start = (
             sorted_fields[index + 1][1] if index + 1 < len(sorted_fields) else max_column + 1
         )
-        rule = FIELD_SPAN_RULES.get(field, {"mode": "fixed", "width": 1})
-        if rule["mode"] == "fixed":
-            end_col = start_col + rule.get("width", 1) - 1
-        else:  # "gap"
-            max_width = rule.get("max", 1)
-            gap_end = next_start - 1 if next_start > start_col else max_column
-            end_col = min(gap_end, start_col + max_width - 1)
+        merged_span = merged_header_span(ws, header_row, start_col)
+        if merged_span is not None:
+            _, end_col = merged_span
+        else:
+            rule = FIELD_SPAN_RULES.get(field, {"mode": "fixed", "width": 1})
+            if rule["mode"] == "fixed":
+                end_col = start_col + rule.get("width", 1) - 1
+            else:  # "gap"
+                max_width = rule.get("max", 1)
+                gap_end = next_start - 1 if next_start > start_col else max_column
+                end_col = min(gap_end, start_col + max_width - 1)
         end_col = min(end_col, max_column)
         if end_col < start_col:
             end_col = start_col
@@ -286,6 +350,93 @@ def slice_row_values(
     return result
 
 
+def parse_group_headers(ws: Worksheet) -> List[GroupHeaderRow]:
+    """Extract bloc/group rows that also carry comparable values such as credits."""
+
+    headers: List[GroupHeaderRow] = []
+    current_layout: Optional[SheetLayout] = None
+    for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        row_values = list(row)
+        header_detection = detect_header(row_values)
+        if header_detection:
+            header_map, header_labels = header_detection
+            field_ranges = compute_field_ranges(ws, row_idx, header_map, ws.max_column)
+            current_layout = SheetLayout(field_ranges=field_ranges, header_labels=header_labels)
+            continue
+        if not current_layout or "code" not in current_layout.field_ranges:
+            continue
+        code_start, code_end = current_layout.field_ranges["code"]
+        code_cell = slice_row_values(row_values, code_start, code_end)[0]
+        course_cell = None
+        if "course" in current_layout.field_ranges:
+            c_start, c_end = current_layout.field_ranges["course"]
+            course_cell = slice_row_values(row_values, c_start, c_end)[0]
+        course_text = normalize_value(course_cell)
+        code_text = normalize_value(code_cell)
+        marker_text = course_text or code_text
+        if not marker_text or looks_like_course_code(marker_text):
+            continue
+        if not (looks_like_group_header(marker_text) or looks_like_boundary_header(marker_text)):
+            continue
+        field_values = {
+            field: slice_row_values(row_values, start, end)
+            for field, (start, end) in current_layout.field_ranges.items()
+            if field != "code"
+        }
+        compare_fields = []
+        for field, values in field_values.items():
+            if field in EXCLUDED_COMPARE_FIELDS:
+                continue
+            if any(normalize_value(v) for v in values):
+                compare_fields.append(field)
+        headers.append(
+            GroupHeaderRow(
+                sheet=ws.title,
+                row_idx=row_idx,
+                group_key=normalize_group_label(marker_text),
+                group_label=marker_text,
+                layout_ranges=current_layout.field_ranges,
+                field_values=field_values,
+                compare_fields=compare_fields,
+            )
+        )
+    return headers
+
+
+def footer_row_key(values: Sequence[Optional[object]]) -> str:
+    """Normalize a whole informational row for matching."""
+
+    parts = [normalize_text(v) for v in values if normalize_text(v)]
+    return " | ".join(parts)
+
+
+def extract_footer_rows(ws: Worksheet) -> List[FooterRow]:
+    """Extract non-empty rows below the last structured table content."""
+
+    courses = parse_sheet(ws)
+    group_headers = parse_group_headers(ws)
+    last_structured_row = 0
+    if courses:
+        last_structured_row = max(last_structured_row, max(r.row_idx for r in courses))
+    if group_headers:
+        last_structured_row = max(last_structured_row, max(r.row_idx for r in group_headers))
+
+    rows: List[FooterRow] = []
+    for row_idx in range(last_structured_row + 1, ws.max_row + 1):
+        values = [ws.cell(row_idx, col).value for col in range(1, ws.max_column + 1)]
+        if not any(normalize_value(v) for v in values):
+            continue
+        rows.append(
+            FooterRow(
+                sheet=ws.title,
+                row_idx=row_idx,
+                values=values,
+                text_key=footer_row_key(values),
+            )
+        )
+    return rows
+
+
 def parse_sheet(ws: Worksheet) -> List[CourseRow]:
     """Extract all course rows from a worksheet."""
 
@@ -299,7 +450,7 @@ def parse_sheet(ws: Worksheet) -> List[CourseRow]:
         header_detection = detect_header(row_values)
         if header_detection:
             header_map, header_labels = header_detection
-            field_ranges = compute_field_ranges(header_map, ws.max_column)
+            field_ranges = compute_field_ranges(ws, row_idx, header_map, ws.max_column)
             current_layout = SheetLayout(field_ranges=field_ranges, header_labels=header_labels)
             current_group_key = ""
             current_group_label = ""
@@ -319,7 +470,9 @@ def parse_sheet(ws: Worksheet) -> List[CourseRow]:
         code_text = normalize_value(code_cell)
         marker_text = course_text or code_text
         normalized_marker_text = normalize_text(marker_text)
-        if marker_text and not looks_like_course_code(marker_text) and looks_like_group_header(marker_text):
+        if marker_text and not looks_like_course_code(marker_text) and (
+            looks_like_group_header(marker_text) or looks_like_boundary_header(marker_text)
+        ):
             group_counter += 1
             current_group_key = normalize_group_label(marker_text)
             current_group_label = marker_text
@@ -497,7 +650,7 @@ def compare_rows(
                 continue
             column = start_col + offset
             cell = ws.cell(row=old_row.row_idx + row_offset, column=column)
-            annotation = f"2023-2024 value: {format_display(new_val)}"
+            annotation = f"value: {format_display(new_val)}"
             annotate_cell(cell, MODIFIED_FILL, annotation)
             diff_log.append(
                 {
@@ -512,6 +665,43 @@ def compare_rows(
     return 0
 
 
+def compare_group_header_rows(
+    ws: Worksheet,
+    old_header: GroupHeaderRow,
+    new_header: GroupHeaderRow,
+    diff_log: List[Dict[str, str]],
+    row_offset: int,
+) -> None:
+    """Compare values present on a bloc/group title row, such as total credits."""
+
+    fields = [f for f in old_header.compare_fields if f in new_header.compare_fields]
+    for field in fields:
+        old_values = old_header.field_values.get(field, [])
+        new_values = new_header.field_values.get(field, [])
+        if not old_values and not new_values:
+            continue
+        start_col, _ = old_header.layout_ranges[field]
+        max_len = max(len(old_values), len(new_values))
+        for offset in range(max_len):
+            old_val = old_values[offset] if offset < len(old_values) else None
+            new_val = new_values[offset] if offset < len(new_values) else None
+            if normalize_value(old_val) == normalize_value(new_val):
+                continue
+            column = start_col + offset
+            cell = ws.cell(row=old_header.row_idx + row_offset, column=column)
+            annotate_cell(cell, MODIFIED_FILL, f"value: {format_display(new_val)}")
+            diff_log.append(
+                {
+                    "sheet": old_header.sheet,
+                    "code": old_header.group_label,
+                    "field": field,
+                    "old": format_display(old_val),
+                    "new": format_display(new_val),
+                    "details": "group/header value changed",
+                }
+            )
+
+
 def mark_removed_row(
     ws: Worksheet, row: CourseRow, diff_log: List[Dict[str, str]], row_offset: int
 ) -> None:
@@ -520,7 +710,7 @@ def mark_removed_row(
     for field, (start, end) in row.layout_ranges.items():
         for col in range(start, end + 1):
             cell = ws.cell(row=row.row_idx + row_offset, column=col)
-            annotate_cell(cell, REMOVED_FILL, "No longer present in 2023-2024")
+            annotate_cell(cell, REMOVED_FILL, "No longer present")
     diff_log.append(
         {
             "sheet": row.sheet,
@@ -528,13 +718,157 @@ def mark_removed_row(
             "field": "row",
             "old": "",
             "new": "",
-            "details": "course removed in 2023-2024 workbook",
+            "details": "course removed",
         }
     )
 
 
+def annotate_footer_row(
+    ws: Worksheet,
+    row_idx: int,
+    values: Sequence[Optional[object]],
+    fill: PatternFill,
+    message: str,
+) -> None:
+    """Highlight all non-empty cells of a footer/info row."""
+
+    for col_idx, value in enumerate(values, start=1):
+        if not normalize_value(value):
+            continue
+        annotate_cell(ws.cell(row=row_idx, column=col_idx), fill, message)
+
+
+def compare_footer_row_values(
+    ws: Worksheet,
+    old_row: FooterRow,
+    new_row: FooterRow,
+    diff_log: List[Dict[str, str]],
+) -> None:
+    """Compare two informational footer rows cell-by-cell."""
+
+    max_len = max(len(old_row.values), len(new_row.values))
+    changed = False
+    for offset in range(max_len):
+        old_val = old_row.values[offset] if offset < len(old_row.values) else None
+        new_val = new_row.values[offset] if offset < len(new_row.values) else None
+        if normalize_value(old_val) == normalize_value(new_val):
+            continue
+        changed = True
+        cell = ws.cell(row=old_row.row_idx, column=offset + 1)
+        annotate_cell(cell, MODIFIED_FILL, f"value: {format_display(new_val)}")
+    if changed:
+        diff_log.append(
+            {
+                "sheet": old_row.sheet,
+                "code": "footer",
+                "field": "note",
+                "old": old_row.text_key,
+                "new": new_row.text_key,
+                "details": "footer/note row changed",
+            }
+        )
+
+
+def compare_footer_rows(old_ws: Worksheet, new_ws: Worksheet, diff_log: List[Dict[str, str]]) -> None:
+    """Compare text rows below the last table and add/remove/update as needed."""
+
+    old_footer = extract_footer_rows(old_ws)
+    new_footer = extract_footer_rows(new_ws)
+    old_keys = [r.text_key for r in old_footer]
+    new_keys = [r.text_key for r in new_footer]
+    matcher = difflib.SequenceMatcher(None, old_keys, new_keys)
+    inserted_offset = 0
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "replace":
+            old_slice = old_footer[i1:i2]
+            new_slice = new_footer[j1:j2]
+            shared = min(len(old_slice), len(new_slice))
+            for idx in range(shared):
+                compare_footer_row_values(old_ws, old_slice[idx], new_slice[idx], diff_log)
+            for row in old_slice[shared:]:
+                target_row = row.row_idx + inserted_offset
+                annotate_footer_row(old_ws, target_row, row.values, REMOVED_FILL, "No longer present")
+                diff_log.append(
+                    {
+                        "sheet": row.sheet,
+                        "code": "footer",
+                        "field": "note",
+                        "old": row.text_key,
+                        "new": "",
+                        "details": "footer/note row removed",
+                    }
+                )
+            insert_pos = (
+                old_slice[-1].row_idx + inserted_offset + 1
+                if old_slice
+                else (old_footer[i1 - 1].row_idx + inserted_offset + 1 if i1 > 0 else old_ws.max_row + 1)
+            )
+            for row in new_slice[shared:]:
+                old_ws.insert_rows(insert_pos)
+                for col_idx, value in enumerate(row.values, start=1):
+                    if value is None:
+                        continue
+                    cell = old_ws.cell(row=insert_pos, column=col_idx)
+                    cell.value = value
+                    annotate_cell(cell, ADDED_FILL, "New footer/note row")
+                diff_log.append(
+                    {
+                        "sheet": row.sheet,
+                        "code": "footer",
+                        "field": "note",
+                        "old": "",
+                        "new": row.text_key,
+                        "details": "footer/note row added",
+                    }
+                )
+                insert_pos += 1
+                inserted_offset += 1
+        elif tag == "delete":
+            for row in old_footer[i1:i2]:
+                target_row = row.row_idx + inserted_offset
+                annotate_footer_row(old_ws, target_row, row.values, REMOVED_FILL, "No longer present")
+                diff_log.append(
+                    {
+                        "sheet": row.sheet,
+                        "code": "footer",
+                        "field": "note",
+                        "old": row.text_key,
+                        "new": "",
+                        "details": "footer/note row removed",
+                    }
+                )
+        elif tag == "insert":
+            insert_pos = old_ws.max_row + 1
+            if i1 < len(old_footer):
+                insert_pos = old_footer[i1].row_idx + inserted_offset
+            for row in new_footer[j1:j2]:
+                old_ws.insert_rows(insert_pos)
+                for col_idx, value in enumerate(row.values, start=1):
+                    if value is None:
+                        continue
+                    cell = old_ws.cell(row=insert_pos, column=col_idx)
+                    cell.value = value
+                    annotate_cell(cell, ADDED_FILL, "New footer/note row")
+                diff_log.append(
+                    {
+                        "sheet": row.sheet,
+                        "code": "footer",
+                        "field": "note",
+                        "old": "",
+                        "new": row.text_key,
+                        "details": "footer/note row added",
+                    }
+                )
+                insert_pos += 1
+                inserted_offset += 1
+
+
 def compare_sheet(
     old_ws: Worksheet,
+    new_ws: Worksheet,
     old_rows: List[CourseRow],
     new_rows: List[CourseRow],
     diff_log: List[Dict[str, str]],
@@ -543,6 +877,8 @@ def compare_sheet(
 
     if not old_rows:
         return
+    old_headers = parse_group_headers(old_ws)
+    new_headers = parse_group_headers(new_ws)
     global_code_index = defaultdict(list)
     global_base_index = defaultdict(list)
     for row in new_rows:
@@ -562,6 +898,8 @@ def compare_sheet(
     grouped_old, order_old = group_rows(old_rows)
     grouped_new, order_new = group_rows(new_rows)
     default_old_layout_ranges = old_rows[0].layout_ranges
+    old_header_map = {h.group_key: h for h in old_headers}
+    new_header_map = {h.group_key: h for h in new_headers}
 
     def map_group_keys(old_keys: List[str], new_keys: List[str]) -> Tuple[Dict[str, Optional[str]], List[str]]:
         remaining = list(new_keys)
@@ -647,6 +985,13 @@ def compare_sheet(
         group_end = max(r.row_idx for r in old_group_rows) if old_group_rows else group_start
         inserted_here = 0
 
+        old_header = old_header_map.get(group_key)
+        new_header = new_header_map.get(mapped_new_key) if mapped_new_key else None
+        if old_header and new_header:
+            compare_group_header_rows(
+                old_ws, old_header, new_header, diff_log, cumulative_offset + inserted_here
+            )
+
         for old_row in old_group_rows:
             current_offset = cumulative_offset + inserted_here
             candidates = [row for row in code_index.get(old_row.code_key, []) if not row.used]
@@ -681,7 +1026,7 @@ def compare_sheet(
                     row,
                     target_layout_ranges,
                     diff_log,
-                    "New course in 2023-2024 workbook",
+                    "New course",
                     insert_at=insert_pos,
                 )
                 inserted_here += 1
@@ -698,7 +1043,7 @@ def compare_sheet(
                 row,
                 default_old_layout_ranges,
                 diff_log,
-                f"New course in 2023-2024 workbook (new bloc {row.group_label or ''})",
+                f"New course (new bloc {row.group_label or ''})",
                 insert_at=insert_pos,
             )
 
@@ -710,7 +1055,7 @@ def compare_sheet(
                 row,
                 default_old_layout_ranges,
                 diff_log,
-                f"New course in 2023-2024 workbook (unmatched bloc {row.group_label or ''})",
+                f"New course (unmatched bloc {row.group_label or ''})",
                 insert_at=old_ws.max_row + 1,
             )
 
@@ -796,7 +1141,14 @@ def run(old_path: str, new_path: str, output_path: str) -> None:
     for old_name, new_name in sheet_mapping.items():
         if new_name is None:
             continue
-        compare_sheet(old_wb[old_name], old_data.get(old_name, []), new_data.get(new_name, []), diff_log)
+        compare_sheet(
+            old_wb[old_name],
+            new_wb[new_name],
+            old_data.get(old_name, []),
+            new_data.get(new_name, []),
+            diff_log,
+        )
+        compare_footer_rows(old_wb[old_name], new_wb[new_name], diff_log)
 
     write_summary_sheet(old_wb, diff_log)
     old_wb.save(output_path)
@@ -806,8 +1158,8 @@ def run(old_path: str, new_path: str, output_path: str) -> None:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Highlight differences between two study plan Excel workbooks.")
-    parser.add_argument("--old", required=True, help="Path to the reference workbook (e.g. 2022-2023).")
-    parser.add_argument("--new", required=True, help="Path to the updated workbook (e.g. 2023-2024).")
+    parser.add_argument("--old", required=True, help="Path to the reference workbook")
+    parser.add_argument("--new", required=True, help="Path to the updated workbook")
     parser.add_argument(
         "--output",
         required=True,
